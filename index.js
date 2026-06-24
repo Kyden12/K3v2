@@ -2,8 +2,11 @@ const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuild
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const LIST_CHANNEL_ID = '1519219595389702244';
 
 const orderList = [null, null, null, null, null];
+let listMessageId = null;
 
 const client = new Client({
   intents: [
@@ -43,14 +46,14 @@ async function registerCommands() {
 
   try {
     console.log('Registering slash commands...');
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
     console.log('Slash commands registered successfully!');
   } catch (err) {
     console.error('Failed to register commands:', err);
   }
 }
 
-function buildListEmbed(highlightSlot = null) {
+function buildListEmbed() {
   const embed = new EmbedBuilder()
     .setTitle('📋 K3 Order List')
     .setColor(0x5865F2)
@@ -58,19 +61,38 @@ function buildListEmbed(highlightSlot = null) {
 
   let description = '';
   for (let i = 0; i < 5; i++) {
-    const slot = i + 1;
     const user = orderList[i];
-    const isHighlighted = highlightSlot === slot;
     const userDisplay = user ? `<@${user.id}>` : '*(empty)*';
-    if (isHighlighted) {
-      description += `**${slot}. ${userDisplay} ← added**\n`;
-    } else {
-      description += `${slot}. ${userDisplay}\n`;
-    }
+    description += `${i + 1}. ${userDisplay}\n`;
   }
 
   embed.setDescription(description);
+  embed.setFooter({ text: 'Last updated' });
   return embed;
+}
+
+async function updateListChannel() {
+  try {
+    const channel = await client.channels.fetch(LIST_CHANNEL_ID);
+    if (!channel) return;
+
+    const embed = buildListEmbed();
+
+    if (listMessageId) {
+      try {
+        const msg = await channel.messages.fetch(listMessageId);
+        await msg.edit({ embeds: [embed] });
+        return;
+      } catch {
+        listMessageId = null;
+      }
+    }
+
+    const sent = await channel.send({ embeds: [embed] });
+    listMessageId = sent.id;
+  } catch (err) {
+    console.error('Failed to update list channel:', err);
+  }
 }
 
 client.on('interactionCreate', async interaction => {
@@ -98,11 +120,11 @@ client.on('interactionCreate', async interaction => {
     }
 
     orderList[openSlot] = { id: user.id, username: user.username };
+    await updateListChannel();
 
-    const embed = buildListEmbed(openSlot + 1);
     await interaction.reply({
       content: `✅ <@${user.id}> has been added to slot **${openSlot + 1}**!`,
-      embeds: [embed]
+      ephemeral: true
     });
   }
 
@@ -118,34 +140,40 @@ client.on('interactionCreate', async interaction => {
     }
 
     orderList[slotIndex] = null;
-    const embed = buildListEmbed();
+    await updateListChannel();
+
     await interaction.reply({
       content: `🗑️ <@${user.id}> has been removed from slot **${slotIndex + 1}**.`,
-      embeds: [embed]
+      ephemeral: true
     });
   }
 
   else if (commandName === 'list') {
-    const embed = buildListEmbed();
-    await interaction.reply({ embeds: [embed] });
+    await updateListChannel();
+    await interaction.reply({
+      content: `📋 List updated in <#${LIST_CHANNEL_ID}>!`,
+      ephemeral: true
+    });
   }
 
   else if (commandName === 'clear') {
     for (let i = 0; i < 5; i++) orderList[i] = null;
-    const embed = buildListEmbed();
+    await updateListChannel();
+
     await interaction.reply({
       content: '🧹 The K3 Order List has been cleared.',
-      embeds: [embed]
+      ephemeral: true
     });
   }
 });
 
-client.once('ready', () => {
+client.once('clientReady', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   client.user.setPresence({
     activities: [{ name: 'K3 Order List', type: ActivityType.Watching }],
     status: 'online',
   });
+  await updateListChannel();
 });
 
 registerCommands().then(() => client.login(TOKEN));
